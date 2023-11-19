@@ -5,7 +5,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import math
 import matplotlib.pyplot as plt
-import os
+import glob, os
 import argparse
 from tqdm import tqdm
 import json
@@ -229,7 +229,7 @@ def post_op(denoised, spec_mask, spec_value):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("-d", "--data_fpath", nargs="+", help="the file of the data")
-    parser.add_argument("-t", "--test_fpath", default=None, help="the file of the data")
+    parser.add_argument("-t", "--test_fpath", nargs="+", default=None, help="the file of the data")
     parser.add_argument("--bsz", default=16, type=int, help="Training data batch size")
     parser.add_argument("--device", default="cuda", type=str, help="Device to train on")
     parser.add_argument("-e", "--no_epochs", default=300, type=int, help="number of epochs")
@@ -239,8 +239,6 @@ def parse_args():
     parser.add_argument("--method", default="orig", type=str, help="training method: orig or neighbor")
     parser.add_argument("--int_down",default=1, type=int, help="integrate downsize for the vxm")
     parser.add_argument("--vxm_loss", default="NCC", type=str, help="loss function for the voxelmorph training")
-    parser.add_argument("--w_n2s", default=1, type=float, help="the loss weight for noise2self loss")
-    parser.add_argument("--w_n2n", default=1, type=float, help="the loss weight for noise2noise loss")
     parser.add_argument("--wmp_epoch", default=1, type=int, help="the number of warm up epochs without denoising before voxelmorph")
     # parser.add_argument("--grad", default="v1", type=str, help="Choose the version of the grad loss to control the smoothness of the voxelmorph displacement, can be either v1 or v2, v1 just caculate the gradient of the neighbors within 1 pixels while v2 calculate 50 pixels in dim 0 which takes the anisotropic feature of the OCT scan.")
     parser.add_argument("--vxm_smooth", default=1, type=float, help="the weight that control the smoothness of the voxelmorph displacement field")
@@ -265,11 +263,24 @@ def main():
     print("Data file: {}".format(args.data_fpath))
     # dataset = MRI_Dataset(args.data_fpath, corrupt_params=dict(type='bspec', p_at_edge=0.025), augment_params={'translate':64})
     # testset = MRI_Dataset(args.test_fpath, mode="test", corrupt_params=dict(type='bspec', p_at_edge=0.025), corrupt_targets=False)
-    dataset = OCT_Dataset(args.data_fpath)
-    testset = OCT_Dataset(args.test_fpath, mode="test")
+    train_flist = []
+    test_flist = []
+    for df in args.data_fpath:
+        if os.path.isdir(df):
+            train_flist += glob.glob(os.path.join(df, "*"))
+        else:
+            train_flist.append(df)
+
+    for df in args.test_fpath:
+        if os.path.isdir(df):
+            test_flist += glob.glob(os.path.join(df, "*"))
+        else:
+            test_flist.append(df)
+
+    dataset = OCT_Dataset(train_flist)
+    testset = OCT_Dataset(test_flist, mode="test")
     dataloader = DataLoader(dataset, batch_size=args.bsz, shuffle=True, num_workers=4)
     testloader = DataLoader(testset, batch_size=1, shuffle=False)
-
 
     model = AutoEncoder(1, 1)
     model = model.to(args.device)
