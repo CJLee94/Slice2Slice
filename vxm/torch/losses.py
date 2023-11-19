@@ -149,7 +149,7 @@ class Grad_v2:
         vol_shape = [n for n in y.shape][2:]
         ndims = len(vol_shape)
 
-        df = [None] * (ndims+self.smooth_order-2)
+        df = [None] * (ndims+self.smooth_order-1)
         for i in range(ndims):
             d = i + 2
             # permute dimensions
@@ -157,7 +157,7 @@ class Grad_v2:
             y = y.permute(r)
             dfi = y[1:, ...] - y[:-1, ...]
             if i == 0:
-                for order in range(2,self.smooth_order):
+                for order in range(2,self.smooth_order+1):
                     dfo = y[order:, ...] - y[:-order, ...]
                     r = [*range(d - 1, d + 1), *reversed(range(1, d - 1)), 0, *range(d + 1, ndims + 2)]
                     df[-(order-1)] = dfo.permute(r)
