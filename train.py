@@ -9,6 +9,7 @@ import os
 import argparse
 from tqdm import tqdm
 import json
+import nibabel as nib
 
 from utils import load_pkl
 from networks import AutoEncoder
@@ -81,20 +82,14 @@ def all_pairs(n):
 class MRI_Dataset(Dataset):
     def __init__(self, 
                  fpath,
-                 augment_params=dict(),
-                 corrupt_params=dict(),
                  corrupt_targets=True,
                  mode="train",
                  repetition_scans=6,
                  ) -> None:
         self.fpath = fpath
-        self.augment_params = augment_params
-        self.corrupt_params = corrupt_params
         self.corrupt_targets = corrupt_targets
         self.mode = mode
-        self.repetition_scans = repetition_scans
         img = []
-        self.spec = []
         # import pdb
         # pdb.set_trace()
         if type(fpath) is list:
@@ -112,8 +107,6 @@ class MRI_Dataset(Dataset):
             self.spec = np.concatenate(self.spec, axis=0)
         else:
             img, self.spec = load_pkl(fpath)
-        
-        img = img[:, :-1, :-1]
 
         # Convert to float32.
         assert img.dtype == np.uint8
@@ -152,6 +145,66 @@ class MRI_Dataset(Dataset):
             return self.img.shape[0]//self.repetition_scans*len(self.pairs)
         else:
             return self.img.shape[0]
+
+
+class OCT_Dataset(Dataset):
+    def __init__(self, 
+                 fpath,
+                 augment_params=dict(),
+                 corrupt_params=dict(),
+                 corrupt_targets=True,
+                 mode="train",
+                 repetition_scans=6,
+                 slice_direction="Ascan",
+                 scale_factor=255,
+                 ) -> None:
+        self.fpath = fpath
+        self.augment_params = augment_params
+        self.corrupt_params = corrupt_params
+        self.corrupt_targets = corrupt_targets
+        self.mode = mode
+        self.repetition_scans = repetition_scans
+        self.slice_direction=slice_direction
+        self.scale_factor = scale_factor
+        img = []
+        # import pdb
+        # pdb.set_trace()
+        if type(fpath) is list:
+            for fp in fpath:
+                im = np.asanyarray(nib.load(fp).dataobj)
+                if slice_direction == "enface":
+                    im = im.transpose(1,0,2)
+                img.append(im)
+            img = np.concatenate(img, axis=0)
+            self.sli_no = im.shape[0]
+        else:
+            img = np.asanyarray(nib.load(fpath).dataobj)
+            self.sli_no = img.shape[0]
+
+        self.img = img.astype(np.float32) / self.scale_factor - 0.5
+
+    def __getitem__(self, idx):
+        if self.mode == "train":
+            img_idx = idx//(self.sli_no-1)*self.sli_no+idx%(self.sli_no-1)
+            inp = self.img[img_idx]
+            t = self.img[img_idx+1]
+            h,w = inp.shape
+
+            h = h//32*32-1
+            w = w//32*32-1
+            
+            return inp[None, :h, :w], t[None, :h, :w]
+        else:
+            h, w = self.img[idx].shape
+            h = h//32*32-1
+            w = w//32*32-1
+            return self.img[idx,:h,:w][None], self.img[idx,:h,:w][None]
+    
+    def __len__(self):
+        if self.mode == "train":
+            return int(len(self.img)/self.sli_no*(self.sli_no-1))
+        else:
+            return len(self.img)
     
 
 def fftshift3d(x, ifft):
@@ -179,7 +232,7 @@ def parse_args():
     parser.add_argument("-t", "--test_fpath", default=None, help="the file of the data")
     parser.add_argument("--bsz", default=16, type=int, help="Training data batch size")
     parser.add_argument("--device", default="cuda", type=str, help="Device to train on")
-    parser.add_argument("-e", "--no_epochs", default=300, help="number of epochs")
+    parser.add_argument("-e", "--no_epochs", default=300, type=int, help="number of epochs")
     parser.add_argument("--lr_max", default=1e-3, type=float, help="maximum of learning rate")
     parser.add_argument("--ckpt_period", default=10, type=int, help="checkpoint period")
     parser.add_argument("--save_dir", default="./vxm_results")
@@ -210,8 +263,10 @@ def main():
         json.dump(args.__dict__, f, indent=2)
 
     print("Data file: {}".format(args.data_fpath))
-    dataset = MRI_Dataset(args.data_fpath, corrupt_params=dict(type='bspec', p_at_edge=0.025), augment_params={'translate':64})
-    testset = MRI_Dataset(args.test_fpath, mode="test", corrupt_params=dict(type='bspec', p_at_edge=0.025), corrupt_targets=False)
+    # dataset = MRI_Dataset(args.data_fpath, corrupt_params=dict(type='bspec', p_at_edge=0.025), augment_params={'translate':64})
+    # testset = MRI_Dataset(args.test_fpath, mode="test", corrupt_params=dict(type='bspec', p_at_edge=0.025), corrupt_targets=False)
+    dataset = OCT_Dataset(args.data_fpath)
+    testset = OCT_Dataset(args.test_fpath, mode="test")
     dataloader = DataLoader(dataset, batch_size=args.bsz, shuffle=True, num_workers=4)
     testloader = DataLoader(testset, batch_size=1, shuffle=False)
 
@@ -221,18 +276,21 @@ def main():
 
     vxm_model = VxmDense(inshape=(dataset[0][0].shape[-2]+1, dataset[0][0].shape[-1]+1), 
                          nb_unet_features=[[16,32,32,32],[32,32,32,32,32,16,16]], 
-                         sample_mode="bilinear", int_downsize=args.int_down)
+                         sample_mode="bilinear", int_downsize=args.int_down, bidir=True)
     vxm_model = vxm_model.to(args.device)
     vxm_optimizer = torch.optim.Adam(vxm_model.parameters(), lr=1e-4)
     if args.vxm_loss == "MSE":
-        vxm_losses = [vxm_MSE().loss, vxm_Grad_v2('l2', loss_mult=1, smooth_order=args.smooth_order).loss]
+        vxm_losses = [vxm_MSE().loss, vxm_MSE().loss, vxm_Grad_v2('l2', loss_mult=args.int_down, smooth_order=args.smooth_order).loss]
     elif args.vxm_loss == "NCC":
-        vxm_losses = [vxm_NCC().loss, vxm_Grad_v2('l2', loss_mult=1, smooth_order=args.smooth_order).loss]
+        vxm_losses = [vxm_NCC().loss, vxm_NCC().loss, vxm_Grad_v2('l2', loss_mult=args.int_down, smooth_order=args.smooth_order).loss]
     
     # optimizer = Adam(model.parameters(), lr=2e-4, betas=[adam_beta1_initial, adam_beta2])
     optimizer = Adam(model.parameters(), lr=2e-4, betas=[0.9, 0.99])
     criterion = nn.MSELoss()
     masker = Masker()
+
+    best_dn_loss = np.inf
+    best_vxm_loss = np.inf
 
     for e in range(args.no_epochs):
         rampup_value = rampup(e, rampup_length)
@@ -246,19 +304,12 @@ def main():
         train_loss = 0
         train_vxm_loss = 0
         model.train()
+        vxm_model.train()
         with tqdm(total=len(dataloader)) as pbar:
             pbar.set_description("Epoch {}".format(e))
-            for step, (input_images, target_images, spec_val, spec_mask) in enumerate(dataloader):
+            for step, (input_images, target_images) in enumerate(dataloader):
                 input_images = input_images.float().to(args.device)
                 target_images = target_images.float().to(args.device)
-
-                # diff = torch.abs(input_images-target_images)
-                # mask = diff.view(diff.shape[0], diff.shape[1], -1)
-                # mask = torch.quantile(mask, 0.999, dim=-1)
-                # mask = (diff-mask[..., None, None]<=0).float()
-
-                spec_val = spec_val.to(args.device)
-                spec_mask = spec_mask.to(args.device)
 
                 if e>=args.wmp_epoch:
                     with torch.no_grad():
@@ -266,18 +317,22 @@ def main():
                         target_images_denoised = model(target_images)
 
                     vxm_optimizer.zero_grad()
-                    aligned_target_denoised, flow  = vxm_model(target_images_denoised.detach()+0.5, input_images_denoised.detach()+0.5)
+                    aligned_target_denoised, aligned_input_denoised, flow  = vxm_model(target_images_denoised.detach()+0.5, input_images_denoised.detach()+0.5)
 
-                    vxm_loss = vxm_losses[0](input_images_denoised+0.5, aligned_target_denoised)+args.vxm_smooth*vxm_losses[1](torch.zeros_like(flow), flow)
+                    vxm_loss = 0.5*vxm_losses[0](input_images_denoised+0.5, aligned_target_denoised)+\
+                               0.5*vxm_losses[1](target_images_denoised+0.5, aligned_input_denoised)+\
+                               args.vxm_smooth*vxm_losses[2](torch.zeros_like(flow), flow)
 
                     vxm_loss.backward()
                     vxm_optimizer.step()
                 else:
 
                     vxm_optimizer.zero_grad()
-                    aligned_target, flow  = vxm_model(target_images+0.5, input_images+0.5)
+                    aligned_target, aligned_input, flow  = vxm_model(target_images+0.5, input_images+0.5)
 
-                    vxm_loss = vxm_losses[0](input_images+0.5, aligned_target)+args.vxm_smooth*vxm_losses[1](torch.zeros_like(flow), flow)
+                    vxm_loss = 0.5*vxm_losses[0](input_images+0.5, aligned_target)+\
+                               0.5*vxm_losses[1](target_images+0.5, aligned_input)+\
+                               args.vxm_smooth*vxm_losses[2](torch.zeros_like(flow), flow)
 
                     vxm_loss.backward()
                     vxm_optimizer.step()
@@ -285,17 +340,17 @@ def main():
                 with torch.no_grad():
                     pos_flow =  vxm_model.fullsize(vxm_model.integrate(flow)) if vxm_model.fullsize else vxm_model.integrate(flow)
                     aligned_target = vxm_model.transformer(target_images+0.5, pos_flow, mode="nearest")
+                    neg_flow =  vxm_model.fullsize(vxm_model.integrate(-flow)) if vxm_model.fullsize else vxm_model.integrate(-flow)
+                    aligned_input = vxm_model.transformer(input_images+0.5, neg_flow, mode="nearest")
 
                 optimizer.zero_grad()
                 # with torch.no_grad():
-                pred = model(input_images)
-                # denoised = post_op(pred, spec_value=spec_val, spec_mask=spec_mask)
-                loss = args.w_n2n*criterion(pred, aligned_target[...,:-1,:-1]-0.5)
-                    # loss = torch.mean(mask*(pred-target_images)**2)
+                pred_input = model(input_images)
+                pred_target = model(target_images)
 
-                input_images_n2s, input_n2s_mask = masker.mask(input_images, step)
-                pred_n2s = model(input_images_n2s)
-                loss += args.w_n2s*criterion(pred_n2s*input_n2s_mask, input_images*input_n2s_mask)
+                # denoised = post_op(pred, spec_value=spec_val, spec_mask=spec_mask)
+                loss = 0.5*criterion(pred_input, aligned_target[...,:-1,:-1].detach()-0.5)+\
+                       0.5*criterion(pred_target, aligned_input[...,:-1,:-1].detach()-0.5)
 
                 loss.backward()
                 optimizer.step()
@@ -309,26 +364,20 @@ def main():
         test_db_clamped = 0.0
         if e%args.ckpt_period == args.ckpt_period-1:
             model.eval()
+            vxm_model.eval()
             torch.save({"dn_model": model.state_dict(), "vxm_model":vxm_model.state_dict()}, os.path.join(result_subdir, 'ckpt_{}.pth'.format(e)))
+            if train_loss/(step+1) < best_dn_loss and train_vxm_loss/(step+1) < best_vxm_loss:
+                best_dn_loss = train_loss/(step+1)
+                best_vxm_loss = train_vxm_loss/(step+1)
+                torch.save({"dn_model": model.state_dict(), "vxm_model":vxm_model.state_dict()}, os.path.join(result_subdir, 'best_{}.pth'.format(e)))
             with tqdm(total=len(testloader)) as pbar:
                 pbar.set_description("Testing")
-                for step, (input_images, target_images, spec_val, spec_mask) in enumerate(testloader):
+                for step, (input_images, target_images) in enumerate(testloader):
                     input_images = input_images.float().to(args.device)
                     target_images = target_images.float().to(args.device)
-                    # spec_val = spec_val.to(args.device)
-                    # spec_mask = spec_mask.to(args.device)
     
                     with torch.no_grad():
                         pred = model(input_images)
-                        # denoised = post_op(pred, spec_mask=spec_mask, spec_value=spec_val)
-                        # pred_clamped = torch.clamp(pred, min=-0.5, max=0.5)
-                        # target_clamped = torch.clamp(target_images, min=-0.5, max=0.5)
-                        # loss = (pred_clamped - target_clamped)**2
-                        # loss = torch.mean(loss, dim=-1).mean(dim=-1)
-    
-                    # indiv_db = 10*torch.log10(1.0/loss)
-                    # test_db_clamped += torch.mean(indiv_db).item()
-                    # pbar.set_postfix({"avg_loss":test_db_clamped/(step+1)})
     
                     pbar.update(1)
                     if step%6==0:
