@@ -377,9 +377,8 @@ def main():
             model.eval()
             vxm_model.eval()
             torch.save({"dn_model": model.state_dict(), "vxm_model":vxm_model.state_dict()}, os.path.join(result_subdir, 'ckpt_{}.pth'.format(e)))
-            if train_loss/(step+1) < best_dn_loss and train_vxm_loss/(step+1) < best_vxm_loss:
+            if train_loss/(step+1) < best_dn_loss:
                 best_dn_loss = train_loss/(step+1)
-                best_vxm_loss = train_vxm_loss/(step+1)
                 torch.save({"dn_model": model.state_dict(), "vxm_model":vxm_model.state_dict()}, os.path.join(result_subdir, 'best_{}.pth'.format(e)))
             with tqdm(total=len(testloader)) as pbar:
                 pbar.set_description("Testing")
