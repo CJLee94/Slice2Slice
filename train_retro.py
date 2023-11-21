@@ -349,9 +349,6 @@ def main():
                 input_images = input_images.float().to(args.device)
                 target_images = target_images.float().to(args.device)
 
-                import pdb
-                pdb.set_trace()
-
                 if e>=args.wmp_epoch:
                     with torch.no_grad():
                         input_images_denoised = model(input_images)
