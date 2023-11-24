@@ -289,8 +289,8 @@ def main():
         else:
             test_flist.append(df)
 
-    dataset = OCT_Dataset(train_flist[:20], slice_direction=args.direction)
-    testset = OCT_Dataset(test_flist[:1], mode="test", slice_direction=args.direction)
+    dataset = OCT_Dataset(train_flist, slice_direction=args.direction)
+    testset = OCT_Dataset(test_flist, mode="test", slice_direction=args.direction)
     dataloader = DataLoader(dataset, batch_size=args.bsz, shuffle=True, num_workers=4)
     testloader = DataLoader(testset, batch_size=1, shuffle=False)
 
