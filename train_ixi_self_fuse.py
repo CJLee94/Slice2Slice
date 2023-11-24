@@ -137,14 +137,14 @@ class OCT_Dataset(Dataset):
             t2 = self.img[img_idx+2]
             h,w = inp.shape
 
-            h = h//32*32-1
-            w = w//32*32-1
+            h = h//32*32
+            w = w//32*32
             
             return inp[None, :h, :w], t[None, :h, :w], t2[None, :h, :w]
         else:
             h, w = self.img[idx].shape
-            h = h//32*32-1
-            w = w//32*32-1
+            h = h//32*32
+            w = w//32*32
             return self.img[idx,:h,:w][None], self.gt[idx,:h,:w][None]
     
     def __len__(self):
@@ -225,15 +225,15 @@ def main():
         else:
             test_flist.append(df)
 
-    dataset = OCT_Dataset(train_flist, slice_direction=args.direction)
-    testset = OCT_Dataset(test_flist, mode="test", slice_direction=args.direction)
+    dataset = OCT_Dataset(train_flist[:2], slice_direction=args.direction)
+    testset = OCT_Dataset(test_flist[:1], mode="test", slice_direction=args.direction)
     dataloader = DataLoader(dataset, batch_size=args.bsz, shuffle=True, num_workers=4)
     testloader = DataLoader(testset, batch_size=1, shuffle=False)
 
     model = AutoEncoder(1, 1)
     model = model.to(args.device)
 
-    vxm_model = VxmDense(inshape=(dataset[0][0].shape[-2]+1, dataset[0][0].shape[-1]+1), 
+    vxm_model = VxmDense(inshape=(dataset[0][0].shape[-2], dataset[0][0].shape[-1]), 
                          nb_unet_features=[[16,32,32,32],[32,32,32,32,32,16,16]], 
                          sample_mode="bilinear", int_downsize=args.int_down, bidir=True)
     vxm_model = vxm_model.to(args.device)
@@ -300,7 +300,7 @@ def main():
                 optimizer.zero_grad()
                 # with torch.no_grad():
                 pred_input = model(target_images)
-                target = (target_images+aligned_input[...,:-1,:-1].detach()+aligned_target2[...,:-1,:-1].detach())/3.0
+                target = (target_images+aligned_input.detach()+aligned_target2.detach())/3.0
 
                 # denoised = post_op(pred, spec_value=spec_val, spec_mask=spec_mask)
                 loss = criterion(pred_input, target.detach())
@@ -344,8 +344,8 @@ def main():
                     if step%50==0:
                         # import pdb
                         # pdb.set_trace()
-                        prim = [input_images[0,0].detach().cpu().numpy(), 
-                                pred[0,0].detach().cpu().numpy(), 
+                        prim = [input_images[0,0,:-1,:-1].detach().cpu().numpy(), 
+                                pred[0,0,:-1,:-1].detach().cpu().numpy(), 
                                 # denoised[0,0].detach().cpu().numpy(),
                                 ]
                         spec = [fftshift2d(abs(np.fft.fft2(x))) for x in prim]
