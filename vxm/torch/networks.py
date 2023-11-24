@@ -249,11 +249,6 @@ class VxmDense(LoadableModel):
             target: Target image tensor.
             registration: Return transformed image and flow. Default is False.
         '''
-        source = F.pad(source, (0,1,0,1), "constant", 0)
-        target = F.pad(target, (0,1,0,1), "constant", 0)
-
-        # import pdb
-        # pdb.set_trace()
 
         # concatenate inputs and propagate unet
         x = torch.cat([source, target], dim=1)
@@ -288,9 +283,9 @@ class VxmDense(LoadableModel):
 
         # return non-integrated flow field if training
         if not registration:
-            return (y_source[...,:-1, :-1], y_target[...,:-1, :-1], preint_flow) if self.bidir else (y_source[...,:-1, :-1], preint_flow)
+            return (y_source, y_target, preint_flow) if self.bidir else (y_source, preint_flow)
         else:
-            return y_source[...,:-1, :-1], pos_flow
+            return y_source, pos_flow
 
 
 class ConvBlock(nn.Module):

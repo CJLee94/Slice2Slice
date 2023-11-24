@@ -64,7 +64,7 @@ class AutoEncoder(nn.Module):
         self.final = nn.Conv2d(96, out_c, 3, 1, 1)
 
     def forward(self, x):
-        x = F.pad(x, (0,1,0,1), "constant", 0)
+        # x = F.pad(x, (0,1,0,1), "constant", 0)
         input = x
         x = self.input_layer(x)
         
@@ -82,4 +82,4 @@ class AutoEncoder(nn.Module):
         x = self.up4(x, x1)
         x = self.up5(x, input)
 
-        return self.final(x)[...,:-1,:-1]
+        return self.final(x)

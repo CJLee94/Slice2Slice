@@ -79,74 +79,6 @@ def all_pairs(n):
     return couple
 
 
-class MRI_Dataset(Dataset):
-    def __init__(self, 
-                 fpath,
-                 corrupt_targets=True,
-                 mode="train",
-                 repetition_scans=6,
-                 ) -> None:
-        self.fpath = fpath
-        self.corrupt_targets = corrupt_targets
-        self.mode = mode
-        img = []
-        # import pdb
-        # pdb.set_trace()
-        if type(fpath) is list:
-            for fp in fpath:
-                im, sp = load_pkl(fp)
-                # import pdb
-                # pdb.set_trace()
-                b, h, w = im.shape
-                im = im[:,h%w:].reshape(b, h//w, w, w).transpose(1,0,2,3).reshape(b*(h//w), w, w)
-                # idx = 0
-                # fig, axes = plt.subplots(1,2);axes[0].imshow(im[idx],cmap="gray");axes[1].imshow(im[idx+5],cmap="gray");plt.show()
-                img.append(im)
-                self.spec.append(np.repeat(sp, h//w, axis=0))
-            img = np.concatenate(img, axis=0)
-            self.spec = np.concatenate(self.spec, axis=0)
-        else:
-            img, self.spec = load_pkl(fpath)
-
-        # Convert to float32.
-        assert img.dtype == np.uint8
-        self.img = img.astype(np.float32) / 255.0 - 0.5
-        self.all_indices = np.arange(self.img.shape[0])
-        self.pairs = all_pairs(repetition_scans)
-
-        # import pdb
-        # pdb.set_trace()
-
-    def __getitem__(self, idx):
-        if self.mode == "train":
-            img_idx = idx//len(self.pairs)*self.repetition_scans
-            img = self.img[img_idx:img_idx+self.repetition_scans]
-            spec = self.spec[img_idx:img_idx+self.repetition_scans]
-            t = img[self.pairs[idx%len(self.pairs)][1]]
-            img = img[self.pairs[idx%len(self.pairs)][0]]
-            spec = spec[self.pairs[idx%len(self.pairs)][0]]
-            img, trans = augment_data(img, spec)
-            t = augment_data_same(t, trans=trans)
-            inp, sv, sm = corrupt_data(img, spec, self.corrupt_params)
-
-            h, w = inp.shape
-            h = h//32*32-1
-            w = w//32*32-1
-            
-            return inp[None, :h, :w], t[None, :h, :w], sv[None], sm[None]
-        else:
-            h, w = self.img[idx].shape
-            h = h//32*32-1
-            w = w//32*32-1
-            return self.img[idx,:h,:w][None], self.img[idx,:h,:w][None], [], []
-    
-    def __len__(self):
-        if self.mode == "train":
-            return self.img.shape[0]//self.repetition_scans*len(self.pairs)
-        else:
-            return self.img.shape[0]
-
-
 class OCT_Dataset(Dataset):
     def __init__(self, 
                  fpath,
@@ -155,7 +87,7 @@ class OCT_Dataset(Dataset):
                  corrupt_targets=True,
                  mode="train",
                  repetition_scans=6,
-                 slice_direction="Ascan",
+                 slice_direction=0,
                  scale_factor=255,
                  ) -> None:
         self.fpath = fpath
@@ -172,8 +104,10 @@ class OCT_Dataset(Dataset):
         if type(fpath) is list:
             for fp in fpath:
                 im = np.asanyarray(nib.load(fp).dataobj)
-                if slice_direction == "enface":
+                if slice_direction == 1:
                     im = im.transpose(1,0,2)
+                elif slice_direction == 2:
+                    im = im.transpose(2,0,1)
                 img.append(im)
             img = np.concatenate(img, axis=0)
             self.sli_no = im.shape[0]
@@ -239,7 +173,8 @@ def parse_args():
     parser.add_argument("--method", default="orig", type=str, help="training method: orig or neighbor")
     parser.add_argument("--int_down",default=1, type=int, help="integrate downsize for the vxm")
     parser.add_argument("--vxm_loss", default="NCC", type=str, help="loss function for the voxelmorph training")
-    parser.add_argument("--wmp_epoch", default=1, type=int, help="the number of warm up epochs without denoising before voxelmorph")
+    parser.add_argument("--wmp_epoch", default=0, type=int, help="the number of warm up epochs without denoising before voxelmorph")
+    parser.add_argument("--direction", default=0, type=int, help="direction to sample the slice")
     # parser.add_argument("--grad", default="v1", type=str, help="Choose the version of the grad loss to control the smoothness of the voxelmorph displacement, can be either v1 or v2, v1 just caculate the gradient of the neighbors within 1 pixels while v2 calculate 50 pixels in dim 0 which takes the anisotropic feature of the OCT scan.")
     parser.add_argument("--vxm_smooth", default=1, type=float, help="the weight that control the smoothness of the voxelmorph displacement field")
     parser.add_argument("--smooth_order", default=1, type=int, help="the order of the smooth regularizer on the voxelmorph displacement field")
@@ -277,8 +212,8 @@ def main():
         else:
             test_flist.append(df)
 
-    dataset = OCT_Dataset(train_flist)
-    testset = OCT_Dataset(test_flist, mode="test")
+    dataset = OCT_Dataset(train_flist, slice_direction=args.direction)
+    testset = OCT_Dataset(test_flist, mode="test", slice_direction=args.direction)
     dataloader = DataLoader(dataset, batch_size=args.bsz, shuffle=True, num_workers=4)
     testloader = DataLoader(testset, batch_size=1, shuffle=False)
 
@@ -360,8 +295,8 @@ def main():
                 pred_target = model(target_images)
 
                 # denoised = post_op(pred, spec_value=spec_val, spec_mask=spec_mask)
-                loss = 0.5*criterion(pred_input, aligned_target[...,:-1,:-1].detach()-0.5)+\
-                       0.5*criterion(pred_target, aligned_input[...,:-1,:-1].detach()-0.5)
+                loss = 0.5*criterion(pred_input, aligned_target.detach()-0.5)+\
+                       0.5*criterion(pred_target, aligned_input.detach()-0.5)
 
                 loss.backward()
                 optimizer.step()
@@ -390,7 +325,7 @@ def main():
                         pred = model(input_images)
     
                     pbar.update(1)
-                    if step%6==0:
+                    if step%50==0:
                         # import pdb
                         # pdb.set_trace()
                         prim = [input_images[0,0].detach().cpu().numpy(), 
